@@ -252,10 +252,11 @@ function blankVariation() {
 }
 let _newDemoVariations = []; // starts empty; base upload is the first decision
 
-// A single text field bound to obj[key].
-function vField(labelText, obj, key, placeholder) {
+// A single text field bound to obj[key]. onInput (optional) fires after each
+// keystroke so the caller can refresh a live preview in place.
+function vField(labelText, obj, key, placeholder, onInput) {
   const input = el('input', { type: 'text', value: obj[key] || '', placeholder: placeholder || '',
-    oninput: (e) => { obj[key] = e.target.value; } });
+    oninput: (e) => { obj[key] = e.target.value; onInput && onInput(); } });
   return el('div', { style: 'margin-bottom:8px' }, [
     el('label', { style: 'margin:6px 0 3px; font-size:13px' }, labelText), input,
   ]);
@@ -263,10 +264,10 @@ function vField(labelText, obj, key, placeholder) {
 
 // An image field: paste a URL OR pick a file (read as data URI). Stores into
 // obj.image; the server hosts it on Cloudinary at deploy (handles URL or data URI).
-function vImageField(labelText, obj) {
+function vImageField(labelText, obj, onInput) {
   const urlInput = el('input', { type: 'text', value: /^data:/.test(obj.image || '') ? '' : (obj.image || ''),
     placeholder: 'Paste an image URL, or choose a file →',
-    oninput: (e) => { obj.image = e.target.value.trim(); refresh(); } });
+    oninput: (e) => { obj.image = e.target.value.trim(); refresh(); onInput && onInput(); } });
   const fileIn = el('input', { type: 'file', accept: 'image/*', style: 'display:none' });
   const pick = el('button', { type: 'button', class: 'btn secondary small', onclick: () => fileIn.click() }, 'Choose image…');
   const note = el('span', { class: 'small muted', style: 'margin-left:8px' });
@@ -279,7 +280,7 @@ function vImageField(labelText, obj) {
     const f = e.target.files && e.target.files[0];
     if (!f) return;
     const r = new FileReader();
-    r.onload = () => { obj.image = String(r.result || ''); refresh(); };
+    r.onload = () => { obj.image = String(r.result || ''); refresh(); onInput && onInput(); };
     r.readAsDataURL(f);
   });
   refresh();
@@ -311,10 +312,51 @@ function buildVariationsSection(onChange) {
   return section;
 }
 
-// One guided variation card: pick a type (Hero swap / Personalized articles),
-// name it, then fill ONLY that surface's fields. Changing the type re-renders
-// the card so the irrelevant fields disappear.
+// Escape a value for safe use inside a CSS url("...") (data URIs / http URLs).
+function cssUrl(s) { return String(s).replace(/["\\\n\r]/g, (c) => '\\' + c); }
+
+// Live preview of the variation being authored, rendered the way WPM will show
+// it — so the SE sees the result before ever opening the WPM editor. Reads the
+// SAME v.hero / v.cards the deploy sends; presentation only, no plumbing.
+function variationPreviewNode(v) {
+  const wrap = el('div', { style: 'margin-top:12px;padding-top:10px;border-top:1px dashed #e0e3e7' }, [
+    el('div', { class: 'small', style: 'font-weight:700;color:#5f6b7a;margin-bottom:6px' },
+      'Live preview — what WPM will show'),
+  ]);
+  if (v.type === 'articles') {
+    wrap.appendChild(el('div', { style: 'display:flex;gap:8px' },
+      v.cards.map((c) => el('div', { style: 'flex:1;border:1px solid #e8eaed;border-radius:8px;overflow:hidden;background:#fff' }, [
+        el('div', { style: `height:64px;background:#f1f3f4 center/cover no-repeat${c.image ? ` url("${cssUrl(c.image)}")` : ''}` }),
+        el('div', { style: 'padding:8px' }, [
+          el('div', { style: 'font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:#8a94a6' }, c.category || 'Category'),
+          el('div', { style: 'font-weight:700;font-size:13px;color:#2b3a4a;margin:2px 0' }, c.title || 'Card title'),
+          el('div', { style: 'font-size:11px;color:#5f6b7a;line-height:1.35' }, c.body || 'Card body copy…'),
+        ]),
+      ]))));
+  } else {
+    const h = v.hero;
+    wrap.appendChild(el('div', { style: 'border:1px solid #e8eaed;border-radius:10px;overflow:hidden;display:flex;background:#fff' }, [
+      el('div', { style: `width:120px;flex:none;background:#f1f3f4 center/cover no-repeat${h.image ? ` url("${cssUrl(h.image)}")` : ''}` }),
+      el('div', { style: 'padding:12px 14px;flex:1' }, [
+        el('div', { style: 'font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#8a94a6' }, h.eyebrow || 'Eyebrow'),
+        el('div', { style: 'font-weight:800;font-size:16px;color:#2b3a4a;margin:3px 0' }, h.header || 'Hero headline'),
+        el('div', { style: 'font-size:12px;color:#5f6b7a;margin-bottom:8px' }, h.subheader || 'Supporting subheader copy'),
+        el('span', { style: 'display:inline-block;background:#1a73e8;color:#fff;font-size:12px;font-weight:700;padding:5px 12px;border-radius:6px' }, h.cta || 'Call to action'),
+      ]),
+    ]));
+  }
+  return wrap;
+}
+
+// One guided variation card: pick a type (Hero swap / Personalized articles)
+// FIRST, name it, then fill ONLY that surface's fields. Changing the type
+// re-renders the card so the irrelevant fields disappear. A live preview below
+// updates in place on every keystroke. Order: type → name → fields → preview.
 function variationCard(v, idx, rerender, onChange) {
+  // Preview refreshed in place (no card re-render, so inputs keep focus).
+  const previewHost = el('div');
+  const updatePreview = () => { previewHost.innerHTML = ''; previewHost.appendChild(variationPreviewNode(v)); };
+
   const typeSelect = el('select', {
     onchange: (e) => { v.type = e.target.value; rerender(); onChange && onChange(); },
   }, [
@@ -332,28 +374,33 @@ function variationCard(v, idx, rerender, onChange) {
   const removeBtn = el('button', { type: 'button', class: 'btn ghost small',
     onclick: () => { _newDemoVariations.splice(idx, 1); rerender(); onChange && onChange(); } }, 'Remove');
 
-  // Only the surface matching the chosen type is shown (and later sent).
+  // Only the surface matching the chosen type is shown (and later sent). Each
+  // field passes updatePreview so the live preview refreshes as they type.
   const surface = v.type === 'articles'
     ? v.cards.map((c, i) => el('div', { style: 'margin-top:8px' }, [
         el('div', { class: 'small', style: 'font-weight:700;color:#2b3a4a;margin-bottom:4px' }, `Market Insights — Card ${i + 1}`),
-        vField('Category', c, 'category', 'e.g. MORTGAGE'),
-        vField('Title', c, 'title'),
-        vField('Body', c, 'body'),
-        vImageField('Card image', c),
+        vField('Category', c, 'category', 'e.g. MORTGAGE', updatePreview),
+        vField('Title', c, 'title', '', updatePreview),
+        vField('Body', c, 'body', '', updatePreview),
+        vImageField('Card image', c, updatePreview),
       ]))
     : [el('div', { style: 'margin-top:8px' }, [
         el('div', { class: 'small', style: 'font-weight:700;color:#2b3a4a;margin-bottom:4px' }, 'Homepage Hero'),
-        vField('Eyebrow', v.hero, 'eyebrow', 'e.g. WELCOME BACK'),
-        vField('Header', v.hero, 'header', 'e.g. Mortgage rates just dropped'),
-        vField('Subheader', v.hero, 'subheader'),
-        vField('CTA text', v.hero, 'cta', 'e.g. See your rate'),
-        vImageField('Hero image', v.hero),
+        vField('Eyebrow', v.hero, 'eyebrow', 'e.g. WELCOME BACK', updatePreview),
+        vField('Header', v.hero, 'header', 'e.g. Mortgage rates just dropped', updatePreview),
+        vField('Subheader', v.hero, 'subheader', '', updatePreview),
+        vField('CTA text', v.hero, 'cta', 'e.g. See your rate', updatePreview),
+        vImageField('Hero image', v.hero, updatePreview),
       ])];
 
+  updatePreview();
+
+  // Order (edit B): type dropdown FIRST, then name, then fields, then preview.
   return el('div', { style: 'border:1px solid #e8eaed;border-radius:10px;padding:14px;margin-bottom:12px' }, [
-    el('div', { style: 'display:flex;gap:8px;align-items:center' }, [el('div', { style: 'flex:1' }, nameInput), removeBtn]),
     typeRow,
+    el('div', { style: 'display:flex;gap:8px;align-items:center' }, [el('div', { style: 'flex:1' }, nameInput), removeBtn]),
     ...surface,
+    previewHost,
   ]);
 }
 
