@@ -38,7 +38,7 @@ function expiresAtFrom(presetKey) {
 // POST /api/deployments
 router.post('/', async (req, res, next) => {
   try {
-    const { name, industry, formData, connectionId, expiry, uploadedHtml, profileDataGraphName, dataSpaceName, connector } = req.body || {};
+    const { name, industry, formData, connectionId, expiry, uploadedHtml, profileDataGraphName, dataSpaceName, connector, baseName } = req.body || {};
     let { variations } = req.body || {};
     if (!name || !connectionId) {
       return res.status(400).json({ error: 'name and connectionId are required' });
@@ -92,8 +92,10 @@ router.post('/', async (req, res, next) => {
     // variation (type 'hero' or 'articles', targets only its surface). deploy.js
     // normalizeVariations() FILTERS OUT anything without a valid non-base type, so
     // the type MUST be carried through here.
+    // Editable WPM label for the base decision; default 'Personalized'.
+    const baseDecisionName = (typeof baseName === 'string' && baseName.trim()) || 'Personalized';
     const deployVariations = [
-      { name: 'Personalized', type: 'base', uploadedHtml: uploadedHtml && uploadedHtml.trim() ? uploadedHtml : null, content: null },
+      { name: baseDecisionName, type: 'base', uploadedHtml: uploadedHtml && uploadedHtml.trim() ? uploadedHtml : null, content: null },
       ...(extraVariations || []).map((v) => ({ name: v.name, type: v.type, uploadedHtml: null, content: v.content })),
     ];
 
@@ -112,6 +114,8 @@ router.post('/', async (req, res, next) => {
         // When the SE uploaded a file, extract real hero content from it into
         // the decision so the WPM swap shows the actual personalized creative.
         uploadedHtml: uploadedHtml && uploadedHtml.trim() ? uploadedHtml : null,
+        // Editable label for the base decision (deploy.js names decision 1 with it).
+        baseName: baseDecisionName,
         // Base experience + any typed variations → one named Decision each per
         // experience. Only pass when there ARE extra variations; otherwise the
         // single-decision default path runs (identical to before).

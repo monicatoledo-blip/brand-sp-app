@@ -246,11 +246,16 @@ function blankVariation() {
   return {
     name: '',
     type: 'hero',
+    _expanded: true, // UI-only collapse state (stripped before deploy)
     hero: { eyebrow: '', header: '', subheader: '', cta: '', image: '' },
     cards: [0, 1, 2].map(() => ({ category: '', title: '', body: '', image: '' })),
   };
 }
 let _newDemoVariations = []; // starts empty; base upload is the first decision
+// The base experience (uploaded file) is decision 1 / "Variation 1". Its content
+// is hard-coded from the file (read-only); only its WPM label is editable here.
+let _baseVariationName = 'Personalized';
+let _baseExpanded = true; // collapse state for the base card
 
 // A single text field bound to obj[key]. onInput (optional) fires after each
 // keystroke so the caller can refresh a live preview in place.
@@ -290,72 +295,246 @@ function vImageField(labelText, obj, onInput) {
   ]);
 }
 
-// Optional "Add variation" section: N typed variations, each = a named Decision
-// on hero + 3 cards (same fields the app builds from the base file). onChange is
-// called whenever anything changes so the caller can re-evaluate the Next gate.
+// A collapsible card shell: a header row (chevron + title + optional badge/
+// controls) and a body that shows/hides on toggle. The toggle flips the DOM in
+// place (no re-render, so preview iframes are not reloaded) and persists the
+// state via setOpen. `titleNode` (a DOM node, e.g. an editable input) takes
+// precedence over the `title` string.
+function collapsibleCard(opts) {
+  const { title, titleNode, subtitle, badge, controls, body, isOpen, setOpen } = opts;
+  const chevron = el('span', { style: 'display:inline-block;width:14px;flex:none;transition:transform .15s;transform:rotate(' + (isOpen() ? 90 : 0) + 'deg);color:#8a94a6' }, '▶');
+  const titleWrap = el('div', { style: 'flex:1;min-width:0' }, [
+    el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
+      titleNode || el('span', { style: 'font-weight:700;color:#2b3a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' }, title),
+      badge || null,
+    ]),
+    subtitle ? el('div', { class: 'small muted', style: 'margin-top:2px' }, subtitle) : null,
+  ]);
+  const bodyWrap = el('div', { style: 'padding:0 14px 14px;' + (isOpen() ? '' : 'display:none') }, body);
+  const header = el('div', {
+    style: 'display:flex;align-items:center;gap:10px;cursor:pointer;padding:12px 14px',
+    onclick: () => {
+      const open = !isOpen();
+      setOpen(open);
+      bodyWrap.style.display = open ? '' : 'none';
+      chevron.style.transform = 'rotate(' + (open ? 90 : 0) + 'deg)';
+    },
+  }, [chevron, titleWrap, controls || null]);
+  return el('div', { style: 'border:1px solid #e8eaed;border-radius:10px;margin-bottom:12px;background:#fff' }, [header, bodyWrap]);
+}
+
+// The "Additional variations" section. Leads with the read-only BASE variation
+// (decision 1, from the uploaded file — only its name is editable), then the
+// SE's typed variations (fully editable). Each card collapses to reduce clutter.
 function buildVariationsSection(onChange) {
   const host = el('div');
   const render = () => {
     host.innerHTML = '';
+    host.appendChild(baseVariationCard(onChange));
     _newDemoVariations.forEach((v, idx) => host.appendChild(variationCard(v, idx, render, onChange)));
     host.appendChild(el('button', { type: 'button', class: 'btn secondary small', style: 'margin-top:4px',
       onclick: () => { _newDemoVariations.push(blankVariation()); render(); onChange && onChange(); } },
-      _newDemoVariations.length ? '+ Add another variation' : '+ Add a variation (optional)'));
+      '+ Add another variation'));
   };
   const section = el('div', { style: 'margin-top:16px; padding-top:14px; border-top:1px solid #e8eaed' }, [
-    el('strong', {}, 'Additional variations (optional)'),
+    el('strong', {}, 'Variations'),
     el('p', { class: 'small muted', style: 'margin:0.35rem 0 0.75rem' },
-      'Add more named versions to swap in WPM’s decision dropdown. Pick what you’re personalizing — a Hero swap (homepage banner) or Personalized articles (the 3 insight cards) — then name it (e.g. Mortgage, Auto Loan) and fill its fields. Blanks can be finished later in WPM.'),
+      'These become the options in WPM’s decision dropdown. Variation 1 is your uploaded experience (the default). Add more named versions — a Hero swap (homepage banner) or Personalized articles (the 3 insight cards) — then name each (e.g. Mortgage, Auto Loan) and fill its fields. Blanks can be finished later in WPM.'),
     host,
   ]);
   render();
   return section;
 }
 
-// Escape a value for safe use inside a CSS url("...") (data URIs / http URLs).
-function cssUrl(s) { return String(s).replace(/["\\\n\r]/g, (c) => '\\' + c); }
-
-// Live preview of the variation being authored, rendered the way WPM will show
-// it — so the SE sees the result before ever opening the WPM editor. Reads the
-// SAME v.hero / v.cards the deploy sends; presentation only, no plumbing.
-function variationPreviewNode(v) {
-  const wrap = el('div', { style: 'margin-top:12px;padding-top:10px;border-top:1px dashed #e0e3e7' }, [
-    el('div', { class: 'small', style: 'font-weight:700;color:#5f6b7a;margin-bottom:6px' },
-      'Live preview — what WPM will show'),
-  ]);
-  if (v.type === 'articles') {
-    wrap.appendChild(el('div', { style: 'display:flex;gap:8px' },
-      v.cards.map((c) => el('div', { style: 'flex:1;border:1px solid #e8eaed;border-radius:8px;overflow:hidden;background:#fff' }, [
-        el('div', { style: `height:64px;background:#f1f3f4 center/cover no-repeat${c.image ? ` url("${cssUrl(c.image)}")` : ''}` }),
-        el('div', { style: 'padding:8px' }, [
-          el('div', { style: 'font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:#8a94a6' }, c.category || 'Category'),
-          el('div', { style: 'font-weight:700;font-size:13px;color:#2b3a4a;margin:2px 0' }, c.title || 'Card title'),
-          el('div', { style: 'font-size:11px;color:#5f6b7a;line-height:1.35' }, c.body || 'Card body copy…'),
-        ]),
-      ]))));
-  } else {
-    const h = v.hero;
-    wrap.appendChild(el('div', { style: 'border:1px solid #e8eaed;border-radius:10px;overflow:hidden;display:flex;background:#fff' }, [
-      el('div', { style: `width:120px;flex:none;background:#f1f3f4 center/cover no-repeat${h.image ? ` url("${cssUrl(h.image)}")` : ''}` }),
-      el('div', { style: 'padding:12px 14px;flex:1' }, [
-        el('div', { style: 'font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#8a94a6' }, h.eyebrow || 'Eyebrow'),
-        el('div', { style: 'font-weight:800;font-size:16px;color:#2b3a4a;margin:3px 0' }, h.header || 'Hero headline'),
-        el('div', { style: 'font-size:12px;color:#5f6b7a;margin-bottom:8px' }, h.subheader || 'Supporting subheader copy'),
-        el('span', { style: 'display:inline-block;background:#1a73e8;color:#fff;font-size:12px;font-weight:700;padding:5px 12px;border-radius:6px' }, h.cta || 'Call to action'),
+// Variation 1: the uploaded file. Read-only content (hard-coded from the file);
+// only the WPM label (_baseVariationName) is editable. Collapsible.
+function baseVariationCard(onChange) {
+  const nameInput = el('input', { type: 'text', value: _baseVariationName,
+    placeholder: 'Default variation name (shows in WPM)',
+    onclick: (e) => e.stopPropagation(), // don't toggle the card when editing the name
+    oninput: (e) => { _baseVariationName = e.target.value; onChange && onChange(); } });
+  const lock = el('span', { class: 'small', style: 'background:#eef1f5;color:#5f6b7a;border-radius:20px;padding:2px 9px;font-weight:600;white-space:nowrap' }, '🔒 from your file');
+  return collapsibleCard({
+    title: 'Variation 1 · Default',
+    subtitle: 'Your uploaded experience — shown by default in WPM. Content comes from the file; only the name is editable.',
+    badge: lock,
+    isOpen: () => _baseExpanded,
+    setOpen: (v) => { _baseExpanded = v; },
+    body: [
+      el('div', { style: 'margin-bottom:8px' }, [
+        el('label', { style: 'margin:6px 0 3px; font-size:13px' }, 'Variation name (WPM label)'),
+        nameInput,
       ]),
-    ]));
+      basePreviewNode(),
+    ],
+  });
+}
+
+// --- Live preview backed by the REAL uploaded markup -----------------------
+// The Adaptive Web export always follows a fixed format (Tailwind CDN + one
+// inline <style> with brand CSS vars; hero = #warm-homepage-section's first
+// <section>; cards = #warm-insights-grid of <article class="home-insight-card">).
+// To show the SE exactly what WPM will render, we reuse that real markup inside
+// an iframe (Tailwind + the file's own <style>) and swap the variation's fields
+// into the mapped sub-elements. Cached once per upload from _uploadedHtml.
+let _baseTemplate = null; // { style, heroHTML, gridHTML } | null
+
+function cacheBaseTemplate(html) {
+  _baseTemplate = null;
+  if (!html || typeof html !== 'string') return;
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const style = Array.from(doc.querySelectorAll('style')).map((s) => s.textContent).join('\n');
+    const warm = doc.getElementById('warm-homepage-section');
+    // Hero banner = the first <section> inside the warm block (the second
+    // section is the Market Insights grid).
+    const heroSection = warm && warm.querySelector('section');
+    const grid = doc.getElementById('warm-insights-grid');
+    _baseTemplate = {
+      style,
+      heroHTML: heroSection ? heroSection.outerHTML : null,
+      gridHTML: grid ? grid.outerHTML : null,
+    };
+  } catch (_) { _baseTemplate = null; }
+}
+
+// Wrap a real markup fragment in a minimal doc that carries Tailwind + the
+// file's own styles, so the fragment renders exactly as in the experience.
+function previewSrcdoc(fragmentHTML) {
+  return '<!doctype html><html><head><meta charset="utf-8">'
+    + '<script src="https://cdn.tailwindcss.com"><\/script>'
+    + '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">'
+    + '<style>' + (_baseTemplate ? _baseTemplate.style : '') + '</style>'
+    + '<style>body{margin:0;background:#fff;overflow-x:hidden}</style></head>'
+    + '<body>' + fragmentHTML + '</body></html>';
+}
+
+// Apply the hero variation fields onto the real hero markup inside the iframe
+// doc. Only non-empty fields override; blanks keep the base creative so the
+// preview always looks like a complete experience (mirrors WPM element swaps).
+function applyHeroOverrides(doc, hero) {
+  const root = doc.body.firstElementChild;
+  if (!root) return;
+  const set = (elm, val) => { if (elm && val) elm.textContent = val; };
+  const ps = root.querySelectorAll('p');
+  set(ps[0], hero.eyebrow);            // eyebrow ("Welcome back, …")
+  set(root.querySelector('h1'), hero.header);
+  set(ps[1], hero.subheader);          // subtext paragraph
+  const cta = root.querySelector('a, button');
+  if (cta && hero.cta) {
+    // Keep any leading icon; replace the trailing label text node.
+    const lastText = Array.from(cta.childNodes).reverse().find((n) => n.nodeType === 3 && n.textContent.trim());
+    if (lastText) lastText.textContent = ' ' + hero.cta; else cta.textContent = hero.cta;
+  }
+  const img = root.querySelector('img');
+  if (img && hero.image) img.setAttribute('src', hero.image);
+}
+
+// Apply the 3 card variations onto the real #warm-insights-grid markup.
+function applyCardOverrides(doc, cards) {
+  const arts = doc.querySelectorAll('article');
+  cards.forEach((c, i) => {
+    const art = arts[i];
+    if (!art) return;
+    const catAndTitle = art.querySelector('div > div, .uppercase');
+    // Category is the small uppercase div sitting just before the <h3>.
+    const h3 = art.querySelector('h3');
+    let cat = h3 && h3.previousElementSibling;
+    if (cat && cat.tagName === 'DIV' && c.category) cat.textContent = c.category;
+    if (h3 && c.title) h3.textContent = c.title;
+    const p = art.querySelector('p');
+    if (p && c.body) p.textContent = c.body;
+    const img = art.querySelector('img');
+    if (img && c.image) img.setAttribute('src', c.image);
+  });
+}
+
+// Build a preview iframe for a real markup fragment. applyFn(doc) applies the
+// variation overrides (or null for a read-only base preview). Returns { frame,
+// refresh }: the iframe loads async (Tailwind + the file's styles), then un-hides
+// the warm block, runs applyFn, and auto-sizes to content. refresh() re-runs
+// applyFn on the already-loaded frame (no reload → no Tailwind flicker).
+function makePreviewFrame(fragmentHTML, applyFn) {
+  const frame = el('iframe', {
+    style: 'width:100%;border:1px solid #e8eaed;border-radius:10px;background:#fff;height:220px',
+    scrolling: 'no', sandbox: 'allow-scripts allow-same-origin',
+    srcdoc: previewSrcdoc(fragmentHTML),
+  });
+  let loaded = false;
+  const size = () => { try { frame.style.height = Math.max(120, frame.contentDocument.body.scrollHeight) + 'px'; } catch (_) {} };
+  const apply = () => {
+    if (!loaded) return;
+    const doc = frame.contentDocument;
+    if (!doc) return;
+    if (applyFn) applyFn(doc);
+    size(); setTimeout(size, 150);
+  };
+  frame.addEventListener('load', () => {
+    loaded = true;
+    const doc = frame.contentDocument;
+    if (!doc) return;
+    // Un-hide the warm block (it ships hidden until personalization fires).
+    doc.querySelectorAll('[hidden],.hidden,[aria-hidden="true"]').forEach((n) => {
+      n.removeAttribute('hidden'); n.removeAttribute('aria-hidden'); n.classList.remove('hidden');
+    });
+    apply();
+    setTimeout(size, 250); setTimeout(size, 700); // Tailwind applies async
+  });
+  return { frame, refresh: apply };
+}
+
+const previewLabel = (t) => el('div', { class: 'small', style: 'font-weight:700;color:#5f6b7a;margin:0 0 6px' }, t);
+
+// Read-only preview of the BASE experience (decision 1) straight from the
+// uploaded file — no overrides. Shows both surfaces (hero + the 3 cards) since
+// the base decision targets every PP. This is what "Personalized" renders in WPM.
+function basePreviewNode() {
+  const wrap = el('div');
+  if (!_baseTemplate || (!_baseTemplate.heroHTML && !_baseTemplate.gridHTML)) {
+    wrap.appendChild(el('div', { class: 'small muted', style: 'padding:10px;border:1px dashed #e0e3e7;border-radius:8px' },
+      'Upload your Adaptive Web file above — it becomes your first variation (the default WPM decision).'));
+    return wrap;
+  }
+  if (_baseTemplate.heroHTML) {
+    wrap.appendChild(el('div', { style: 'margin-bottom:12px' }, [previewLabel('Homepage hero'), makePreviewFrame(_baseTemplate.heroHTML, null).frame]));
+  }
+  if (_baseTemplate.gridHTML) {
+    wrap.appendChild(el('div', {}, [previewLabel('Market Insights'), makePreviewFrame(_baseTemplate.gridHTML, null).frame]));
   }
   return wrap;
 }
 
-// One guided variation card: pick a type (Hero swap / Personalized articles)
-// FIRST, name it, then fill ONLY that surface's fields. Changing the type
-// re-renders the card so the irrelevant fields disappear. A live preview below
-// updates in place on every keystroke. Order: type → name → fields → preview.
+// Live preview of a typed variation, rendered from the REAL uploaded markup so
+// it matches the experience exactly. Overrides only the fields the SE filled;
+// blanks keep the base creative (mirrors WPM element swaps). wrap.refresh()
+// re-applies field values in place for live keystroke updates.
+function variationPreviewNode(v) {
+  const wrap = el('div', { style: 'margin-top:12px;padding-top:10px;border-top:1px dashed #e0e3e7' }, [
+    previewLabel('Live preview — what WPM will show'),
+  ]);
+  const fragment = v.type === 'articles' ? (_baseTemplate && _baseTemplate.gridHTML) : (_baseTemplate && _baseTemplate.heroHTML);
+  if (!fragment) {
+    wrap.appendChild(el('div', { class: 'small muted', style: 'padding:10px;border:1px dashed #e0e3e7;border-radius:8px' },
+      'Upload your Adaptive Web file above to preview this variation in the real layout.'));
+    return wrap;
+  }
+  const built = makePreviewFrame(fragment, (doc) => {
+    if (v.type === 'articles') applyCardOverrides(doc, v.cards); else applyHeroOverrides(doc, v.hero);
+  });
+  wrap.appendChild(built.frame);
+  wrap.refresh = built.refresh;
+  return wrap;
+}
+
+// One guided variation card (an EDITABLE extra). Collapsible: the name stays
+// visible in the header; the body leads with the type dropdown (edit B), then
+// ONLY that surface's fields, then a live preview that refreshes in place on
+// every keystroke. Changing the type re-renders the card (irrelevant fields go).
 function variationCard(v, idx, rerender, onChange) {
-  // Preview refreshed in place (no card re-render, so inputs keep focus).
-  const previewHost = el('div');
-  const updatePreview = () => { previewHost.innerHTML = ''; previewHost.appendChild(variationPreviewNode(v)); };
+  // Preview built ONCE (iframe with the real markup); keystrokes call its
+  // in-place refresh so Tailwind isn't reloaded and inputs keep focus.
+  const previewNode = variationPreviewNode(v);
+  const updatePreview = () => { if (previewNode.refresh) previewNode.refresh(); };
 
   const typeSelect = el('select', {
     onchange: (e) => { v.type = e.target.value; rerender(); onChange && onChange(); },
@@ -368,11 +547,14 @@ function variationCard(v, idx, rerender, onChange) {
     typeSelect,
   ]);
 
+  // Name lives in the collapsible header so it stays visible when collapsed.
   const nameInput = el('input', { type: 'text', value: v.name || '',
     placeholder: 'Variation name (e.g. Mortgage) — shows in WPM',
+    style: 'margin:0',
+    onclick: (e) => e.stopPropagation(), // editing the name shouldn't toggle
     oninput: (e) => { v.name = e.target.value; onChange && onChange(); } });
   const removeBtn = el('button', { type: 'button', class: 'btn ghost small',
-    onclick: () => { _newDemoVariations.splice(idx, 1); rerender(); onChange && onChange(); } }, 'Remove');
+    onclick: (e) => { e.stopPropagation(); _newDemoVariations.splice(idx, 1); rerender(); onChange && onChange(); } }, 'Remove');
 
   // Only the surface matching the chosen type is shown (and later sent). Each
   // field passes updatePreview so the live preview refreshes as they type.
@@ -393,15 +575,16 @@ function variationCard(v, idx, rerender, onChange) {
         vImageField('Hero image', v.hero, updatePreview),
       ])];
 
-  updatePreview();
-
-  // Order (edit B): type dropdown FIRST, then name, then fields, then preview.
-  return el('div', { style: 'border:1px solid #e8eaed;border-radius:10px;padding:14px;margin-bottom:12px' }, [
-    typeRow,
-    el('div', { style: 'display:flex;gap:8px;align-items:center' }, [el('div', { style: 'flex:1' }, nameInput), removeBtn]),
-    ...surface,
-    previewHost,
-  ]);
+  const badge = el('span', { class: 'small', style: 'background:#eef1f5;color:#5f6b7a;border-radius:20px;padding:2px 9px;font-weight:600;white-space:nowrap' },
+    v.type === 'articles' ? 'Articles' : 'Hero');
+  return collapsibleCard({
+    titleNode: el('div', { style: 'flex:1;min-width:0' }, nameInput),
+    badge,
+    controls: removeBtn,
+    isOpen: () => v._expanded !== false,
+    setOpen: (open) => { v._expanded = open; },
+    body: [typeRow, ...surface, previewNode],
+  });
 }
 
 // Drop the cached New Demo card so the next render rebuilds a clean journey.
@@ -412,7 +595,10 @@ function resetNewDemo() {
   _newDemoSource = null;
   _newDemoReady = null;
   _uploadedHtml = null;
+  cacheBaseTemplate(null);
   _newDemoVariations = [];
+  _baseVariationName = 'Personalized';
+  _baseExpanded = true;
 }
 
 // Stepper header (1 Ready · 2 Bring experience · 3 Target & deploy).
@@ -527,6 +713,7 @@ function renderNewDemo() {
     const reader = new FileReader();
     reader.onload = () => {
       _uploadedHtml = String(reader.result || '');
+      cacheBaseTemplate(_uploadedHtml); // parse hero/cards markup + styles for live preview
       const ok = HAS_ZONES(_uploadedHtml);
       uploadStatus.className = ok ? 'banner success small' : 'banner error small';
       uploadStatus.style.marginTop = '0.75rem';
@@ -534,7 +721,7 @@ function renderNewDemo() {
       uploadStatus.textContent = ok
         ? `Hosting “${file.name}” (${Math.round(_uploadedHtml.length / 1024)} KB) as-is — this is your base experience (the first WPM decision).`
         : `“${file.name}” doesn’t look like an Adaptive Web export (content zones not found). It won’t work as a live demo.`;
-      if (!ok) _uploadedHtml = null;
+      if (!ok) { _uploadedHtml = null; cacheBaseTemplate(null); }
       applySource();
     };
     reader.readAsText(file);
@@ -874,6 +1061,9 @@ async function runDeploy() {
       // Base experience file (upload path). Form path omits it and deploy
       // renders from formData.
       uploadedHtml: usingUpload ? _uploadedHtml : undefined,
+      // Editable WPM label for the base (decision 1). Only sent on the upload
+      // path (the base decision is the uploaded file); ignored otherwise.
+      baseName: usingUpload ? (_baseVariationName || '').trim() || undefined : undefined,
       // Optional typed variations → an extra named Decision each per experience.
       variations: extraVariations.length ? extraVariations : undefined,
       expiry: 'never',

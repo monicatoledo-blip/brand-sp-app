@@ -301,7 +301,7 @@ async function decisionsFor(def, demoName, formData, opts = {}) {
   // A PP must have at least one decision (WPM needs something to bind). If no
   // variation targeted it, fall back to an empty base decision.
   if (!decisions.length) {
-    decisions.push(await buildDecision({ name: 'Personalized', type: 'base', uploadedHtml: null, content: null }));
+    decisions.push(await buildDecision({ name: (opts.baseName && String(opts.baseName).trim()) || 'Personalized', type: 'base', uploadedHtml: null, content: null }));
   }
   return decisions;
 }
@@ -313,7 +313,7 @@ async function decisionsFor(def, demoName, formData, opts = {}) {
 // only their surface. Callers pass opts.variations for the extras; the base is
 // added here from opts.uploadedHtml.
 function normalizeVariations(opts = {}) {
-  const base = { name: 'Personalized', type: 'base', uploadedHtml: opts.uploadedHtml || null, content: null };
+  const base = { name: (opts.baseName && String(opts.baseName).trim()) || 'Personalized', type: 'base', uploadedHtml: opts.uploadedHtml || null, content: null };
   const extras = Array.isArray(opts.variations)
     ? opts.variations
         .filter((v) => v && v.type && v.type !== 'base')
@@ -334,7 +334,7 @@ function normalizeVariations(opts = {}) {
 // it drives the live Web SDK beacon (see html/inject-sdk.js). Stored verbatim so
 // the beacon can be (re)built; empty is allowed (page renders, beacon commented).
 async function deploy(conn, opts) {
-  const { demoName, profileDataGraphName, formData, connector, uploadedHtml, variations } = opts || {};
+  const { demoName, profileDataGraphName, formData, connector, uploadedHtml, variations, baseName } = opts || {};
   if (!demoName) throw new Error('deploy: demoName is required');
   if (!profileDataGraphName) throw new Error('deploy: profileDataGraphName is required');
   const dataSpaceName = (opts && opts.dataSpaceName) || DEFAULT_DATA_SPACE;
@@ -399,7 +399,7 @@ async function deploy(conn, opts) {
         profileDataGraphName,
         source: 'PersonalizationApp',
         schemaName: schemaNameByKey[def.schemaKey],
-        decisions: await decisionsFor(def, demoName, formData, { uploadedHtml, variations }),
+        decisions: await decisionsFor(def, demoName, formData, { uploadedHtml, variations, baseName }),
       });
       artifacts.pps.push({ key: def.key, name, id: created.id, zone: def.zone });
     }
