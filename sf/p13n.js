@@ -118,38 +118,44 @@ async function createTransformer(conn, def) {
   return { id: res && res.id, name: def.name, raw: res };
 }
 
+// The SINGLE-transformer resource is SINGULAR with an idOrName QUERY param
+// (verified against the SDO: GET .../external-apps/transformer?idOrName=<x>),
+// NOT the plural path-param form .../external-apps/transformers/<id>. The plural
+// path-param DELETE returns 2xx but is a NO-OP — the root cause of every delete
+// stranding its transformers (schemas then can't delete). PATHS.transformers
+// (plural) is still correct for the LIST/CREATE collection.
+function singleTransformerUrl(idOrName) {
+  return `${BASE}/external-apps/transformer?idOrName=${encodeURIComponent(idOrName)}`;
+}
+
 async function deleteTransformer(conn, idOrName) {
-  const url = `${PATHS.transformers}/${encodeURIComponent(idOrName)}`;
-  let res;
+  const url = singleTransformerUrl(idOrName);
   try {
-    res = await conn.request({ method: 'DELETE', url });
+    await conn.request({ method: 'DELETE', url });
   } catch (err) {
+    // A 404/already-gone here is fine — the caller treats it as removed.
     throw readableErr(err, `DELETE ${url}`);
   }
-  // DIAGNOSTIC: transformer DELETE has been returning success without actually
-  // deleting. Log the raw response so we can see what the API returns, then
-  // VERIFY it's gone; if it still exists, treat as a real failure (throw) so
-  // the delete job doesn't falsely mark it removed.
-  console.warn('[p13n] deleteTransformer response', JSON.stringify({ url, res }));
+  // VERIFY it's actually gone (the plural no-op returned success without
+  // deleting, so we never trust the DELETE response alone). If the GET still
+  // finds it, throw so the delete job retries instead of falsely advancing.
   try {
-    await get(conn, url); // if this SUCCEEDS, the transformer still exists
+    await get(conn, singleTransformerUrl(idOrName));
     const e = new Error(`DELETE ${url}: transformer still present after delete (API no-op)`);
     console.warn('[p13n] deleteTransformer NO-OP — still present:', idOrName);
     throw e;
   } catch (verifyErr) {
-    // Expected path: the GET should 404 (already gone) → deletion confirmed.
     if (/not.?found|does not exist|NOT_FOUND|INVALID_CROSS_REFERENCE|invalid cross|could not find|INVALID_API_INPUT/i.test(String(verifyErr.message || ''))) {
       return { deleted: idOrName };
     }
-    throw verifyErr; // includes our "still present" error
+    throw verifyErr;
   }
 }
 
-// Fetch a single transformer; throws (already-gone) if it doesn't exist. Used by
-// the delete job's self-heal to verify a transformer really exists before
-// re-queueing it for deletion.
+// Fetch a single transformer; throws (already-gone) if it doesn't exist. Uses
+// the same singular/query-param resource the delete now uses.
 async function getTransformer(conn, idOrName) {
-  return get(conn, `${PATHS.transformers}/${encodeURIComponent(idOrName)}`);
+  return get(conn, singleTransformerUrl(idOrName));
 }
 
 // --- Personalization Point (+ nested Decisions) --------------------------------

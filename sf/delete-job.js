@@ -242,11 +242,18 @@ async function stepDelete(row) {
   };
 
   // Phase 1: PPs (frees schema refs + nested decisions). Only after configs.
-  if (!prog.experienceConfigs.length) await drain('PersonalizationPoint', p13n.deletePoint, 'pps');
+  if (!prog.experienceConfigs.length) {
+    console.warn('[delete-job] PHASE pps enter', JSON.stringify({ budget, ppQueue: prog.queue.pps.length }));
+    await drain('PersonalizationPoint', p13n.deletePoint, 'pps');
+    console.warn('[delete-job] PHASE pps exit', JSON.stringify({ budget, ppQueue: prog.queue.pps.length }));
+  }
 
   // Phase 2: transformers (only after all PPs are cleared).
-  if (!prog.experienceConfigs.length && !prog.queue.pps.length) {
+  const t2gate = !prog.experienceConfigs.length && !prog.queue.pps.length;
+  console.warn('[delete-job] PHASE transformers gate', JSON.stringify({ t2gate, budget, ecLen: prog.experienceConfigs.length, ppQueue: prog.queue.pps.length, tQueue: prog.queue.transformers.length }));
+  if (t2gate) {
     await drain('Experience Template', p13n.deleteTransformer, 'transformers');
+    console.warn('[delete-job] PHASE transformers exit', JSON.stringify({ budget, tQueue: prog.queue.transformers.length }));
   }
 
   // Phase 3: schemas (only after configs + PPs + transformers are gone). Same
