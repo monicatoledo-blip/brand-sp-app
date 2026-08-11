@@ -161,15 +161,26 @@ function insightCardTransformerHtml() {
 // uploaded file, so we host it on Cloudinary and store the returned URL (a
 // decision attribute can't hold a multi-hundred-KB blob). Async because of the
 // upload.
-async function heroDecisionAttributeValues(demoName, formData, uploadedHtml) {
+async function heroDecisionAttributeValues(demoName, formData, uploadedHtml, content) {
   let image = '';
   let eyebrow = '';
   let header = '';
   let subheader = '';
   let cta = '';
 
-  // 1) Preferred: extract from the uploaded HTML's personalized hero.
-  const hero = uploadedHtml ? extractHeroContent(uploadedHtml) : null;
+  // 0) Typed variation: the SE entered hero fields in the app (a "friendly form"
+  //    variation, not an HTML upload). Use those verbatim; image still hosted on
+  //    Cloudinary below like any other.
+  if (content) {
+    image = String(content.image || '').trim();
+    eyebrow = String(content.eyebrow || '').trim();
+    header = String(content.header || '').trim();
+    subheader = String(content.subheader || '').trim();
+    cta = String(content.cta || content.callToActionText || '').trim();
+  }
+
+  // 1) Preferred (upload path): extract from the uploaded HTML's personalized hero.
+  const hero = !content && uploadedHtml ? extractHeroContent(uploadedHtml) : null;
   if (hero) {
     image = (hero.image || '').trim();
     // Keep the eyebrow ("Welcome back, <name>") as its OWN value — the hero has
@@ -181,8 +192,9 @@ async function heroDecisionAttributeValues(demoName, formData, uploadedHtml) {
     cta = (hero.cta || '').trim();
   }
 
-  // 2) Fallback: form-config path (when a demo is built via the form).
-  if (!image && !header) {
+  // 2) Fallback: form-config path (when a demo is built via the form). Skipped
+  //    for typed variations — those use exactly what the SE entered.
+  if (!content && !image && !header) {
     const fd = formData || {};
     const story = (() => {
       try {
@@ -218,9 +230,10 @@ async function heroDecisionAttributeValues(demoName, formData, uploadedHtml) {
 // Build ONE card's decision values (Image/Category/Title/Body) from the uploaded
 // HTML's warm cards. cardIndex is 1-based. The thumbnail is hosted on Cloudinary
 // (like the hero) so the decision carries a real URL, not a base64 blob.
-async function cardDecisionAttributeValues(demoName, uploadedHtml, cardIndex) {
-  const cards = (uploadedHtml && extractInsightCards(uploadedHtml)) || [];
-  const c = cards[cardIndex - 1] || {};
+async function cardDecisionAttributeValues(demoName, uploadedHtml, cardIndex, content) {
+  // Typed variation: the SE entered this card's fields in the app. Else extract
+  // from the uploaded HTML's warm cards.
+  const c = content || (uploadedHtml && extractInsightCards(uploadedHtml) || [])[cardIndex - 1] || {};
   let image = String(c.image || '').trim();
   if (image) {
     const hosted = await uploadHeroImage(image, {
@@ -237,39 +250,81 @@ async function cardDecisionAttributeValues(demoName, uploadedHtml, cardIndex) {
   return values.filter((v) => v.value);
 }
 
-// Decisions per PP. Both experiences get a personalized decision built from the
-// uploaded HTML's warm content, so the WPM swap shows the real creative. Async
-// (image hosting). A demo with no uploaded HTML yields empty-value decisions
-// that WPM can still bind + author.
-async function decisionsFor(def, demoName, formData, uploadedHtml) {
-  if (def.key === 'homepageHero') {
-    return [
-      {
-        name: apiName(prefixed(demoName, 'Personalized Hero')),
-        label: 'Personalized Hero',
-        attributeValues: await heroDecisionAttributeValues(demoName, formData, uploadedHtml),
+// Decisions per PP. Each "variation" becomes a named Decision on the PP(s) it
+// TARGETS — so WPM's decision dropdown lists them to swap between. Variations
+// are typed:
+//   - 'base'     (the uploaded experience) → applies to ALL PPs, extracted from HTML
+//   - 'hero'     → adds a decision to the Homepage Hero PP only (typed hero fields)
+//   - 'articles' → adds a decision to the 3 card PPs only (typed card fields)
+// So a "Mortgage hero swap" variation does NOT create empty Mortgage decisions
+// on the cards, and vice versa. Shape:
+//   { name, type, uploadedHtml? , content:{ hero?:{...}, cards?:[{...}] } }
+async function decisionsFor(def, demoName, formData, opts = {}) {
+  const variations = normalizeVariations(opts);
+  const isHeroPP = def.key === 'homepageHero';
+  const isCardPP = !!def.cardIndex;
+
+  // Does this variation target this PP?
+  const targets = (v) =>
+    v.type === 'base' ||
+    (v.type === 'hero' && isHeroPP) ||
+    (v.type === 'articles' && isCardPP);
+
+  const buildDecision = async (variation) => {
+    const vName = variation.name; // e.g. "Mortgage" (WPM dropdown label)
+    const html = variation.uploadedHtml || null;
+    const typed = variation.content || null;
+    if (isHeroPP) {
+      return {
+        name: apiName(prefixed(demoName, `Hero ${vName}`)),
+        label: vName,
+        attributeValues: await heroDecisionAttributeValues(`${demoName} ${vName}`, formData, html, typed && typed.hero),
         state: 'Live',
-      },
-    ];
-  }
-  if (def.cardIndex) {
-    return [
-      {
-        name: apiName(prefixed(demoName, `Personalized Card ${def.cardIndex}`)),
-        label: `Personalized Card ${def.cardIndex}`,
-        attributeValues: await cardDecisionAttributeValues(demoName, uploadedHtml, def.cardIndex),
+      };
+    }
+    if (isCardPP) {
+      const cardContent = typed && Array.isArray(typed.cards) ? typed.cards[def.cardIndex - 1] : null;
+      return {
+        name: apiName(prefixed(demoName, `Card ${def.cardIndex} ${vName}`)),
+        label: vName,
+        attributeValues: await cardDecisionAttributeValues(`${demoName} ${vName}`, html, def.cardIndex, cardContent),
         state: 'Live',
-      },
-    ];
+      };
+    }
+    return { name: apiName(prefixed(demoName, `${def.key} ${vName}`)), label: vName, attributeValues: [], state: 'Live' };
+  };
+
+  const decisions = [];
+  for (const v of variations) {
+    if (targets(v)) decisions.push(await buildDecision(v));
   }
-  return [
-    {
-      name: apiName(prefixed(demoName, `${def.key} Default`)),
-      label: 'Default',
-      attributeValues: [],
-      state: 'Live',
-    },
-  ];
+  // A PP must have at least one decision (WPM needs something to bind). If no
+  // variation targeted it, fall back to an empty base decision.
+  if (!decisions.length) {
+    decisions.push(await buildDecision({ name: 'Personalized', type: 'base', uploadedHtml: null, content: null }));
+  }
+  return decisions;
+}
+
+// Normalize deploy opts into a typed variations array
+// [{ name, type:'base'|'hero'|'articles', uploadedHtml?, content? }].
+// The base experience (from the uploaded HTML / form) is always type 'base' and
+// targets all PPs. Extra variations are typed 'hero' or 'articles' and target
+// only their surface. Callers pass opts.variations for the extras; the base is
+// added here from opts.uploadedHtml.
+function normalizeVariations(opts = {}) {
+  const base = { name: 'Personalized', type: 'base', uploadedHtml: opts.uploadedHtml || null, content: null };
+  const extras = Array.isArray(opts.variations)
+    ? opts.variations
+        .filter((v) => v && v.type && v.type !== 'base')
+        .map((v) => ({
+          name: String(v.name || '').trim() || 'Variation',
+          type: v.type === 'articles' ? 'articles' : 'hero',
+          uploadedHtml: null,
+          content: v.content || null,
+        }))
+    : [];
+  return [base, ...extras];
 }
 
 // deploy(conn, { demoName, dataSpaceName?, profileDataGraphName, connector, formData })
@@ -279,7 +334,7 @@ async function decisionsFor(def, demoName, formData, uploadedHtml) {
 // it drives the live Web SDK beacon (see html/inject-sdk.js). Stored verbatim so
 // the beacon can be (re)built; empty is allowed (page renders, beacon commented).
 async function deploy(conn, opts) {
-  const { demoName, profileDataGraphName, formData, connector, uploadedHtml } = opts || {};
+  const { demoName, profileDataGraphName, formData, connector, uploadedHtml, variations } = opts || {};
   if (!demoName) throw new Error('deploy: demoName is required');
   if (!profileDataGraphName) throw new Error('deploy: profileDataGraphName is required');
   const dataSpaceName = (opts && opts.dataSpaceName) || DEFAULT_DATA_SPACE;
@@ -344,7 +399,7 @@ async function deploy(conn, opts) {
         profileDataGraphName,
         source: 'PersonalizationApp',
         schemaName: schemaNameByKey[def.schemaKey],
-        decisions: await decisionsFor(def, demoName, formData, uploadedHtml),
+        decisions: await decisionsFor(def, demoName, formData, { uploadedHtml, variations }),
       });
       artifacts.pps.push({ key: def.key, name, id: created.id, zone: def.zone });
     }

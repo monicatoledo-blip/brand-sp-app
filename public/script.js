@@ -233,6 +233,129 @@ let _newDemoCard = null;
 let _newDemoStep = 1;
 let _newDemoSource = null; // 'form' | 'upload'
 let _newDemoReady = null; // null=unknown, true/false from prereq check
+// ADDITIONAL named variations the SE types in the app (beyond the base
+// uploaded experience). GUIDED: each variation targets ONE surface, chosen from
+// a type dropdown first, then only that surface's fields show:
+//   type 'hero'     → a Hero swap → named Decision on the Homepage Hero PP only
+//   type 'articles' → Personalized articles → named Decisions on the 3 card PPs only
+// A variation carries BOTH sub-objects but only the one matching its type is
+// sent at deploy (see runDeploy). Shape:
+//   { name, type:'hero'|'articles',
+//     hero:{eyebrow,header,subheader,cta,image}, cards:[{category,title,body,image} x3] }
+function blankVariation() {
+  return {
+    name: '',
+    type: 'hero',
+    hero: { eyebrow: '', header: '', subheader: '', cta: '', image: '' },
+    cards: [0, 1, 2].map(() => ({ category: '', title: '', body: '', image: '' })),
+  };
+}
+let _newDemoVariations = []; // starts empty; base upload is the first decision
+
+// A single text field bound to obj[key].
+function vField(labelText, obj, key, placeholder) {
+  const input = el('input', { type: 'text', value: obj[key] || '', placeholder: placeholder || '',
+    oninput: (e) => { obj[key] = e.target.value; } });
+  return el('div', { style: 'margin-bottom:8px' }, [
+    el('label', { style: 'margin:6px 0 3px; font-size:13px' }, labelText), input,
+  ]);
+}
+
+// An image field: paste a URL OR pick a file (read as data URI). Stores into
+// obj.image; the server hosts it on Cloudinary at deploy (handles URL or data URI).
+function vImageField(labelText, obj) {
+  const urlInput = el('input', { type: 'text', value: /^data:/.test(obj.image || '') ? '' : (obj.image || ''),
+    placeholder: 'Paste an image URL, or choose a file →',
+    oninput: (e) => { obj.image = e.target.value.trim(); refresh(); } });
+  const fileIn = el('input', { type: 'file', accept: 'image/*', style: 'display:none' });
+  const pick = el('button', { type: 'button', class: 'btn secondary small', onclick: () => fileIn.click() }, 'Choose image…');
+  const note = el('span', { class: 'small muted', style: 'margin-left:8px' });
+  function refresh() {
+    if (/^data:/.test(obj.image || '')) { note.textContent = '✓ image selected'; urlInput.value = ''; }
+    else if (obj.image) note.textContent = '✓ URL set';
+    else note.textContent = '';
+  }
+  fileIn.addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => { obj.image = String(r.result || ''); refresh(); };
+    r.readAsDataURL(f);
+  });
+  refresh();
+  return el('div', { style: 'margin-bottom:8px' }, [
+    el('label', { style: 'margin:6px 0 3px; font-size:13px' }, labelText),
+    el('div', { style: 'display:flex;gap:8px;align-items:center' }, [el('div', { style: 'flex:1' }, urlInput), pick, fileIn, note]),
+  ]);
+}
+
+// Optional "Add variation" section: N typed variations, each = a named Decision
+// on hero + 3 cards (same fields the app builds from the base file). onChange is
+// called whenever anything changes so the caller can re-evaluate the Next gate.
+function buildVariationsSection(onChange) {
+  const host = el('div');
+  const render = () => {
+    host.innerHTML = '';
+    _newDemoVariations.forEach((v, idx) => host.appendChild(variationCard(v, idx, render, onChange)));
+    host.appendChild(el('button', { type: 'button', class: 'btn secondary small', style: 'margin-top:4px',
+      onclick: () => { _newDemoVariations.push(blankVariation()); render(); onChange && onChange(); } },
+      _newDemoVariations.length ? '+ Add another variation' : '+ Add a variation (optional)'));
+  };
+  const section = el('div', { style: 'margin-top:16px; padding-top:14px; border-top:1px solid #e8eaed' }, [
+    el('strong', {}, 'Additional variations (optional)'),
+    el('p', { class: 'small muted', style: 'margin:0.35rem 0 0.75rem' },
+      'Add more named versions to swap in WPM’s decision dropdown. Pick what you’re personalizing — a Hero swap (homepage banner) or Personalized articles (the 3 insight cards) — then name it (e.g. Mortgage, Auto Loan) and fill its fields. Blanks can be finished later in WPM.'),
+    host,
+  ]);
+  render();
+  return section;
+}
+
+// One guided variation card: pick a type (Hero swap / Personalized articles),
+// name it, then fill ONLY that surface's fields. Changing the type re-renders
+// the card so the irrelevant fields disappear.
+function variationCard(v, idx, rerender, onChange) {
+  const typeSelect = el('select', {
+    onchange: (e) => { v.type = e.target.value; rerender(); onChange && onChange(); },
+  }, [
+    el('option', { value: 'hero', selected: v.type === 'hero' ? 'selected' : null }, 'Hero swap — homepage banner'),
+    el('option', { value: 'articles', selected: v.type === 'articles' ? 'selected' : null }, 'Personalized articles — the 3 insight cards'),
+  ]);
+  const typeRow = el('div', { style: 'margin-bottom:8px' }, [
+    el('label', { style: 'margin:0 0 3px; font-size:13px' }, 'What are you personalizing?'),
+    typeSelect,
+  ]);
+
+  const nameInput = el('input', { type: 'text', value: v.name || '',
+    placeholder: 'Variation name (e.g. Mortgage) — shows in WPM',
+    oninput: (e) => { v.name = e.target.value; onChange && onChange(); } });
+  const removeBtn = el('button', { type: 'button', class: 'btn ghost small',
+    onclick: () => { _newDemoVariations.splice(idx, 1); rerender(); onChange && onChange(); } }, 'Remove');
+
+  // Only the surface matching the chosen type is shown (and later sent).
+  const surface = v.type === 'articles'
+    ? v.cards.map((c, i) => el('div', { style: 'margin-top:8px' }, [
+        el('div', { class: 'small', style: 'font-weight:700;color:#2b3a4a;margin-bottom:4px' }, `Market Insights — Card ${i + 1}`),
+        vField('Category', c, 'category', 'e.g. MORTGAGE'),
+        vField('Title', c, 'title'),
+        vField('Body', c, 'body'),
+        vImageField('Card image', c),
+      ]))
+    : [el('div', { style: 'margin-top:8px' }, [
+        el('div', { class: 'small', style: 'font-weight:700;color:#2b3a4a;margin-bottom:4px' }, 'Homepage Hero'),
+        vField('Eyebrow', v.hero, 'eyebrow', 'e.g. WELCOME BACK'),
+        vField('Header', v.hero, 'header', 'e.g. Mortgage rates just dropped'),
+        vField('Subheader', v.hero, 'subheader'),
+        vField('CTA text', v.hero, 'cta', 'e.g. See your rate'),
+        vImageField('Hero image', v.hero),
+      ])];
+
+  return el('div', { style: 'border:1px solid #e8eaed;border-radius:10px;padding:14px;margin-bottom:12px' }, [
+    el('div', { style: 'display:flex;gap:8px;align-items:center' }, [el('div', { style: 'flex:1' }, nameInput), removeBtn]),
+    typeRow,
+    ...surface,
+  ]);
+}
 
 // Drop the cached New Demo card so the next render rebuilds a clean journey.
 // Called after a successful deploy and when the connected org changes.
@@ -242,6 +365,7 @@ function resetNewDemo() {
   _newDemoSource = null;
   _newDemoReady = null;
   _uploadedHtml = null;
+  _newDemoVariations = [];
 }
 
 // Stepper header (1 Ready · 2 Bring experience · 3 Target & deploy).
@@ -343,43 +467,42 @@ function renderNewDemo() {
     ]),
   ]);
 
+  // --- Base experience: the ONE simulator file (as before). Its extracted
+  //     content is the first WPM decision ("Personalized").
   _uploadedHtml = null;
+  const HAS_ZONES = (h) => /warm-homepage-section|warm-insights-grid|floating-cards-container|cat-hero/.test(h || '');
   const uploadStatus = el('div', { class: 'small muted', style: 'margin-top:0.75rem' });
   const fileInput = el('input', { type: 'file', accept: '.html,text/html', id: 'uploadFile', style: 'display:none' });
-  const chooseBtn = el('button', {
-    type: 'button', class: 'btn secondary upload-btn',
-    onclick: () => fileInput.click(),
-  }, 'Choose downloaded HTML file…');
-
-  const uploadCard = el('div', { class: 'card upload-card', style: 'margin-top:1rem' }, [
-    el('strong', {}, 'Upload a downloaded experience'),
-    el('p', { class: 'small muted', style: 'margin:0.35rem 0 0.75rem' },
-      'Skip the form and host an HTML file you downloaded from the Experience Generator’s Adaptive Web experience. We host it as-is and inject the Data Cloud SDK + content zones. Uploading a file overrides the form fields above.'),
-    chooseBtn, fileInput, uploadStatus,
-  ]);
-
-  const setFileMode = (on) => {
-    uploadCard.classList.toggle('active', on);
-  };
-
+  const chooseBtn = el('button', { type: 'button', class: 'btn secondary upload-btn', onclick: () => fileInput.click() }, 'Choose downloaded HTML file…');
   fileInput.addEventListener('change', (e) => {
     const file = e.target.files && e.target.files[0];
-    if (!file) { _uploadedHtml = null; uploadStatus.textContent = ''; setFileMode(false); return; }
+    if (!file) { _uploadedHtml = null; uploadStatus.textContent = ''; applySource(); return; }
     const reader = new FileReader();
     reader.onload = () => {
       _uploadedHtml = String(reader.result || '');
-      const ok = /warm-homepage-section|floating-cards-container|cat-hero/.test(_uploadedHtml);
+      const ok = HAS_ZONES(_uploadedHtml);
       uploadStatus.className = ok ? 'banner success small' : 'banner error small';
       uploadStatus.style.marginTop = '0.75rem';
       chooseBtn.textContent = ok ? `✓ ${file.name}` : 'Choose downloaded HTML file…';
       uploadStatus.textContent = ok
-        ? `Hosting “${file.name}” (${Math.round(_uploadedHtml.length / 1024)} KB) as-is. The form fields above are ignored — only the demo name, Profile Data Graph, and this file are used.`
+        ? `Hosting “${file.name}” (${Math.round(_uploadedHtml.length / 1024)} KB) as-is — this is your base experience (the first WPM decision).`
         : `“${file.name}” doesn’t look like an Adaptive Web export (content zones not found). It won’t work as a live demo.`;
       if (!ok) _uploadedHtml = null;
-      setFileMode(ok);
+      applySource();
     };
     reader.readAsText(file);
   });
+
+  const uploadCard = el('div', { class: 'card upload-card', style: 'margin-top:1rem' }, [
+    el('strong', {}, 'Upload your downloaded experience'),
+    el('p', { class: 'small muted', style: 'margin:0.35rem 0 0.75rem' },
+      'Host the Adaptive Web HTML you downloaded from the Experience Generator. This is your base personalized experience. You can add more named variations below (optional) — each becomes a swappable option in WPM.'),
+    chooseBtn, fileInput, uploadStatus,
+  ]);
+
+  // --- Additional variations (OPTIONAL): typed content, one named Decision each.
+  //     Rendered by buildVariationsSection() (defined below), appended to step2.
+  const variationsSection = buildVariationsSection(() => applySource());
   // ---- Assemble the three step sections (inputs above are reused as-is). ----
 
   // STEP 1 — org readiness + org-side prework (Profile Data Graph is placed
@@ -438,6 +561,7 @@ function renderNewDemo() {
       ]),
     ]),
     uploadCard,
+    variationsSection,
   ]);
   const formPanel = el('div', { class: 'source-panel' }, [configFields]);
 
@@ -446,6 +570,9 @@ function renderNewDemo() {
   // dimmed/disabled so an SE can't pick a file before naming the demo (and then
   // miss the name entirely). Enabled live as they type.
   const hasName = () => nameInput.value.trim().length > 0;
+  // Upload path is ready when the BASE file is uploaded and every ADDED
+  // variation (optional) has a name. Variations with no name block Next.
+  const uploadReady = () => !!_uploadedHtml && _newDemoVariations.every((v) => (v.name || '').trim());
   const applySource = () => {
     const locked = !hasName();
     sourceChoice.classList.toggle('gated', locked);
@@ -454,7 +581,10 @@ function renderNewDemo() {
     uploadPanel.classList.toggle('hidden', locked || _newDemoSource !== 'upload');
     formPanel.classList.toggle('hidden', locked || _newDemoSource !== 'form');
     nameHint.classList.toggle('hidden', !locked);
-    step2next.disabled = locked || !_newDemoSource;
+    // Gate Next: form path just needs the source picked; upload path needs the
+    // base file + every added variation named.
+    const uploadOk = _newDemoSource === 'upload' ? uploadReady() : true;
+    step2next.disabled = locked || !_newDemoSource || !uploadOk;
   };
   const sourceOpt = (key, title, desc) => el('div', {
     class: 'source-opt', 'data-src': key,
@@ -464,7 +594,7 @@ function renderNewDemo() {
     el('div', { class: 'so-desc' }, desc),
   ]);
   nameInput.addEventListener('input', applySource);
-  sourceChoice.appendChild(sourceOpt('upload', 'Upload a downloaded file', 'Host the Adaptive Web HTML you exported from the Experience Generator. Recommended — it’s the exact creative your customer sees.'));
+  sourceChoice.appendChild(sourceOpt('upload', 'Upload a downloaded file', 'Host the Adaptive Web HTML you exported from the Experience Generator. Optionally add named variations (e.g. Mortgage, Auto Loan) for a WPM decision dropdown. Recommended.'));
   sourceChoice.appendChild(sourceOpt('form', 'Design it here', 'Pick an industry + use case and set brand colors. Good for a quick generic demo.'));
   step2.appendChild(sourceChoice);
   step2.appendChild(uploadPanel);
@@ -634,7 +764,20 @@ async function runDeploy() {
     statusArea.appendChild(el('div', { class: 'banner error' }, 'Demo name is required.'));
     return;
   }
-  const usingUpload = !!_uploadedHtml;
+  // Upload path when the source is 'upload' and the base file is present. The
+  // base file is the first decision; typed variations (named) are the extras.
+  const usingUpload = _newDemoSource === 'upload' && !!_uploadedHtml;
+  // Each variation targets ONE surface (its type). Send only that surface's
+  // content so a hero variation never lands empty card decisions and vice versa.
+  const extraVariations = usingUpload
+    ? (_newDemoVariations || [])
+        .filter((v) => (v.name || '').trim())
+        .map((v) => ({
+          name: v.name.trim(),
+          type: v.type === 'articles' ? 'articles' : 'hero',
+          content: v.type === 'articles' ? { cards: v.cards } : { hero: v.hero },
+        }))
+    : [];
   const formData = {
     adaptiveBrandName: $('#brandName').value,
     adaptiveWebSubIndustry: $('#industrySel').value,
@@ -681,7 +824,11 @@ async function runDeploy() {
       formData,
       profileDataGraphName,
       connector: ($('#connectorId') && $('#connectorId').value.trim()) || undefined,
+      // Base experience file (upload path). Form path omits it and deploy
+      // renders from formData.
       uploadedHtml: usingUpload ? _uploadedHtml : undefined,
+      // Optional typed variations → an extra named Decision each per experience.
+      variations: extraVariations.length ? extraVariations : undefined,
       expiry: 'never',
     });
     steps.forEach((_, i) => setStep(i, 'done'));

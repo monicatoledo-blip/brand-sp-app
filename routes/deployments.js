@@ -39,6 +39,7 @@ function expiresAtFrom(presetKey) {
 router.post('/', async (req, res, next) => {
   try {
     const { name, industry, formData, connectionId, expiry, uploadedHtml, profileDataGraphName, dataSpaceName, connector } = req.body || {};
+    let { variations } = req.body || {};
     if (!name || !connectionId) {
       return res.status(400).json({ error: 'name and connectionId are required' });
     }
@@ -46,13 +47,15 @@ router.post('/', async (req, res, next) => {
     const connRow = await db.getSfConnection(req.user.id, connectionId);
     if (!connRow) return res.status(404).json({ error: 'connection_not_found' });
 
-    // 1. Source the HTML. Either the SE brought their own downloaded file
-    //    (uploadedHtml) or we render it from the form config. Downloaded files
-    //    from the Experience Generator are self-contained and have the content
-    //    zone surfaces but NOT the Data Cloud SDK, so we inject the SDK either way.
+    // 1. Source the HTML for the HOSTED PAGE + the BASE experience. There is ONE
+    //    simulator file (uploadedHtml); its extracted content is the first
+    //    Decision. `variations` are ADDITIONAL named decisions the SE typed in
+    //    the app (friendly form), each { name, content:{hero,cards} } — NOT more
+    //    files. Together they become the WPM decision dropdown.
+    const HAS_ZONES = (h) => /warm-homepage-section|warm-insights-grid|floating-cards-container|cat-hero/.test(h || '');
     let baseHtml;
     if (uploadedHtml && uploadedHtml.trim()) {
-      if (!/warm-homepage-section|floating-cards-container|cat-hero/.test(uploadedHtml)) {
+      if (!HAS_ZONES(uploadedHtml)) {
         return res.status(400).json({
           error: 'uploaded_html_missing_zones',
           detail:
@@ -63,6 +66,36 @@ router.post('/', async (req, res, next) => {
     } else {
       baseHtml = build.render(formData || {});
     }
+
+    // Normalize the additional typed variations. Each is GUIDED and targets ONE
+    // surface: type 'hero' (a Hero swap) or 'articles' (the 3 insight cards).
+    // Each needs a name (the WPM dropdown label) + typed content for its surface.
+    // Blank fields are fine — they land empty and can be finished in WPM.
+    let extraVariations = null;
+    if (Array.isArray(variations) && variations.length) {
+      extraVariations = variations
+        .map((v) => ({
+          name: String(v && v.name || '').trim(),
+          type: (v && v.type) === 'articles' ? 'articles' : 'hero',
+          content: (v && v.content) || null,
+        }))
+        .filter((v) => v.name); // a variation with no name is ignored
+      const dupe = extraVariations.map((v) => v.name.toLowerCase()).find((n, i, a) => a.indexOf(n) !== i);
+      if (dupe) {
+        return res.status(400).json({ error: 'duplicate_variation_name', detail: `Two variations share the name “${dupe}”. Give each a unique name.` });
+      }
+      if (!extraVariations.length) extraVariations = null;
+    }
+
+    // Assemble the full variation list for deploy: the base experience (from the
+    // uploaded HTML) as decision 1 (type 'base', targets all PPs), then each typed
+    // variation (type 'hero' or 'articles', targets only its surface). deploy.js
+    // normalizeVariations() FILTERS OUT anything without a valid non-base type, so
+    // the type MUST be carried through here.
+    const deployVariations = [
+      { name: 'Personalized', type: 'base', uploadedHtml: uploadedHtml && uploadedHtml.trim() ? uploadedHtml : null, content: null },
+      ...(extraVariations || []).map((v) => ({ name: v.name, type: v.type, uploadedHtml: null, content: v.content })),
+    ];
 
     // 2. Create SP objects in the SDO via the Personalization Connect REST API.
     //    Done BEFORE SDK injection so the discovered tenant endpoint (dcTse) and
@@ -79,6 +112,10 @@ router.post('/', async (req, res, next) => {
         // When the SE uploaded a file, extract real hero content from it into
         // the decision so the WPM swap shows the actual personalized creative.
         uploadedHtml: uploadedHtml && uploadedHtml.trim() ? uploadedHtml : null,
+        // Base experience + any typed variations → one named Decision each per
+        // experience. Only pass when there ARE extra variations; otherwise the
+        // single-decision default path runs (identical to before).
+        variations: extraVariations ? deployVariations : undefined,
       });
     } catch (err) {
       // Deploy failed (and rolled back its own partial objects). Do NOT persist
