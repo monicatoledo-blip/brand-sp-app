@@ -12,6 +12,7 @@ const passport = require('passport');
 
 const db = require('./db');
 const googleAuth = require('./auth/google');
+const localAuth = require('./auth/local');
 const salesforceAuth = require('./auth/salesforce');
 
 const app = express();
@@ -69,7 +70,8 @@ app.get('/health', async (req, res) => {
 app.use('/', require('./routes/serve'));
 
 // --- Auth routes ---
-googleAuth.registerRoutes(app);
+googleAuth.registerRoutes(app); // /api/me, /auth/logout (+ inert /auth/google unless configured)
+localAuth.registerRoutes(app); // POST /auth/login — username-only login
 salesforceAuth.registerRoutes(app);
 
 // --- Authenticated API routes ---

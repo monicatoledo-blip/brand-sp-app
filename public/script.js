@@ -4,7 +4,8 @@
 // new demo, manage demos, connected orgs. State is minimal and re-fetched.
 
 const state = {
-  me: null, // {id, email, name}
+  me: null, // {id, email, name, username}
+  authMode: 'local', // 'local' (username-only) | 'google'
   connections: [], // sf_connections
   activeConnectionId: null,
   deployments: [],
@@ -60,8 +61,10 @@ function clearQuery() {
 async function boot() {
   try {
     state.me = await api('GET', '/api/me');
-  } catch {
+    state.authMode = state.me.authMode || 'local';
+  } catch (e) {
     state.me = null;
+    state.authMode = (e && e.data && e.data.authMode) || 'local';
   }
   if (!state.me) return renderSignIn();
 
@@ -99,19 +102,56 @@ function renderSignIn() {
             el('a', { href: EXPERIENCE_GENERATOR_URL, target: '_blank' }, 'Open the Experience Generator →'),
           ])
         : null,
-      el('div', { class: 'card' }, [
-        el('h2', {}, 'Sign in'),
-        el('p', { class: 'muted' }, 'Internal tool for Salesforce SEs. Sign in with your @salesforce.com Google account.'),
-        authErr === 'domain_not_allowed'
-          ? el('div', { class: 'banner error' }, 'That email domain is not allowed. Use your @salesforce.com account.')
-          : null,
-        // Carry the current URL (incl. ?config= from the Experience Generator
-        // handoff) through the OAuth round-trip so the prefill survives sign-in.
-        el('a', { class: 'btn google', href: '/auth/google?returnTo=' + encodeURIComponent(location.pathname + location.search) }, 'Sign in with Google'),
-      ]),
+      state.authMode === 'google'
+        ? el('div', { class: 'card' }, [
+            el('h2', {}, 'Sign in'),
+            el('p', { class: 'muted' }, 'Internal tool for Salesforce SEs. Sign in with your @salesforce.com Google account.'),
+            authErr === 'domain_not_allowed'
+              ? el('div', { class: 'banner error' }, 'That email domain is not allowed. Use your @salesforce.com account.')
+              : null,
+            // Carry the current URL (incl. ?config= from the Experience Generator
+            // handoff) through the OAuth round-trip so the prefill survives sign-in.
+            el('a', { class: 'btn google', href: '/auth/google?returnTo=' + encodeURIComponent(location.pathname + location.search) }, 'Sign in with Google'),
+          ])
+        : renderUsernameSignIn(),
     ])
   );
   if (authErr) clearQuery();
+}
+
+// Username-only sign-in (Okta-fronted internal app). The SE enters their
+// Salesforce email prefix; returning users must type it exactly to reconnect to
+// their existing account + demos.
+function renderUsernameSignIn() {
+  const input = el('input', {
+    type: 'text', id: 'usernameInput',
+    placeholder: 'e.g. mtoledo', autocomplete: 'username', autofocus: 'true',
+  });
+  const status = el('div', { class: 'muted small', id: 'loginStatus' });
+  const submit = async () => {
+    const raw = (input.value || '').trim();
+    if (!raw) { status.textContent = 'Enter your Salesforce email prefix.'; return; }
+    status.textContent = 'Signing in…';
+    try {
+      const data = await api('POST', '/auth/login', {
+        username: raw,
+        returnTo: location.pathname + location.search,
+      });
+      // Navigate to returnTo so a ?config= handoff prefill survives sign-in.
+      location.href = data && data.returnTo ? data.returnTo : '/';
+    } catch (e) {
+      status.textContent = e.message || 'Sign-in failed. Try again.';
+    }
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  return el('div', { class: 'card' }, [
+    el('h2', {}, 'Sign in'),
+    el('p', { class: 'muted' }, 'Internal tool for Salesforce SEs. Enter your Salesforce username — the part of your email before @salesforce.com (e.g. mtoledo). Returning users: type it exactly as before to get back to your demos.'),
+    el('label', { for: 'usernameInput', style: 'display:block; margin:6px 0 3px; font-size:13px' }, 'Salesforce username'),
+    input,
+    el('button', { class: 'btn primary', onclick: submit, style: 'margin-top:12px;' }, 'Sign in'),
+    status,
+  ]);
 }
 
 // Right side of the control bar: signed-in email + sign out.
@@ -157,13 +197,16 @@ function renderApp({ banner } = {}) {
   const app = $('#app');
   app.innerHTML = '';
 
+  // Surface any OAuth/redirect banner (e.g. sf_error) BEFORE the connect-screen
+  // early return — otherwise a failed Salesforce connect silently re-renders
+  // "Connect Your SDO" with no message, which looks like a login loop.
+  if (banner) app.appendChild(el('div', { class: 'banner ' + banner.type }, banner.msg));
+
   // No connected org yet -> force Connect SDO screen.
   if (!state.connections.length) {
     app.appendChild(renderConnectSdo());
     return;
   }
-
-  if (banner) app.appendChild(el('div', { class: 'banner ' + banner.type }, banner.msg));
 
   if (state.route === 'newDemo') app.appendChild(renderNewDemo());
   else if (state.route === 'manageDemos') app.appendChild(renderManageDemos());

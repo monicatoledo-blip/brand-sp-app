@@ -131,11 +131,21 @@ CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
 
 CREATE TABLE IF NOT EXISTS users (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  google_sub    TEXT UNIQUE NOT NULL,
-  email         TEXT NOT NULL,
+  username      TEXT,
+  google_sub    TEXT,
+  email         TEXT,
   name          TEXT,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Username-only login (Okta-fronted internal app; Google dropped). Idempotent
+-- so this also upgrades an older Google-era users table in place: add the
+-- column, drop the legacy NOT NULL on google_sub, and give each identity column
+-- its own unique index (NULLs are distinct, so mixed rows are fine).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
+ALTER TABLE users ALTER COLUMN google_sub DROP NOT NULL;
+ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users (username);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users (google_sub);
 
 CREATE TABLE IF NOT EXISTS sf_connections (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -193,6 +203,22 @@ async function upsertUser({ googleSub, email, name }) {
 async function getUserById(id) {
   const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
   return rows[0] || null;
+}
+
+// Username-only login. One row per username (the SE's @salesforce.com email
+// prefix). Idempotent: returning users reconnect to their existing row (and its
+// demos), so re-logging in never orphans a user's deployments.
+async function upsertUserByUsername({ username, email, name }) {
+  const { rows } = await pool.query(
+    `INSERT INTO users (username, email, name)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (username)
+     DO UPDATE SET email = COALESCE(EXCLUDED.email, users.email),
+                   name  = COALESCE(EXCLUDED.name, users.name)
+     RETURNING *`,
+    [username, email || null, name || null]
+  );
+  return rows[0];
 }
 
 // --- sf_connections ---
@@ -400,6 +426,7 @@ module.exports = {
   ping,
   initSchema,
   upsertUser,
+  upsertUserByUsername,
   getUserById,
   upsertSfConnection,
   listSfConnections,

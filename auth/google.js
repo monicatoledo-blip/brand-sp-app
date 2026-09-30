@@ -123,12 +123,21 @@ function registerRoutes(app) {
     });
   });
 
-  // Lightweight identity endpoint for the SPA.
+  // Lightweight identity endpoint for the SPA. authMode tells the sign-in gate
+  // which form to render: 'google' when a Google client is configured, else
+  // 'local' (username-only, the Okta-fronted internal default).
   app.get('/api/me', (req, res) => {
+    const authMode = process.env.GOOGLE_CLIENT_ID ? 'google' : 'local';
     if (req.isAuthenticated && req.isAuthenticated()) {
-      return res.json({ id: req.user.id, email: req.user.email, name: req.user.name });
+      return res.json({
+        id: req.user.id,
+        email: req.user.email,
+        name: req.user.name,
+        username: req.user.username,
+        authMode,
+      });
     }
-    return res.status(401).json({ error: 'unauthenticated' });
+    return res.status(401).json({ error: 'unauthenticated', authMode });
   });
 }
 
