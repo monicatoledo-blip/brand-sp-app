@@ -33,6 +33,13 @@ function registerRoutes(app) {
 
   app.post('/auth/login', async (req, res, next) => {
     try {
+      // SECURITY: username login is passwordless — safe ONLY behind an edge gate
+      // (Okta on the internal app). When Google is configured (the old, publicly
+      // reachable app), this route is disabled so a public URL can't be entered
+      // by typing any username. Same code, both apps; behavior is config-driven.
+      if (process.env.GOOGLE_CLIENT_ID) {
+        return res.status(404).json({ error: 'not_found' });
+      }
       const username = normalizeUsername(req.body && req.body.username);
       if (!username) {
         return res.status(400).json({ error: 'invalid_username', detail: 'Enter your Salesforce email prefix (e.g. mtoledo).' });
